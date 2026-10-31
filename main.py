@@ -1,15 +1,23 @@
 import os
 import sqlite3
 import logging
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
 
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN")
+PORT = int(os.getenv("PORT", "10000"))
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
+
 DB = "voidfall.db"
 
 SWORDS = {
@@ -57,12 +65,11 @@ def get_player(user):
             "UPDATE players SET name=? WHERE user_id=?",
             (user.full_name, user.id)
         )
-        row = db.execute(
+        return db.execute(
             "SELECT level, xp, hp, coins, sword, armor, medkits "
             "FROM players WHERE user_id=?",
             (user.id,)
         ).fetchone()
-    return row
 
 
 def home_keyboard():
@@ -88,20 +95,13 @@ def home_text(name):
 HELP_TEXT = """📖 راهنمای بازی VOIDFALL
 
 👤 پروفایل:
-وضعیت شخصیت، لول، XP، سلامتی، تجهیزات و سکه‌هات رو ببین.
+وضعیت شخصیت، لول، XP، سلامتی و تجهیزاتت رو ببین.
 
 🛒 فروشگاه:
-شمشیر و زره بخر و تجهیزاتت رو ارتقا بده.
+شمشیر و زره بخر.
 
 ⚔️ مبارزه:
-برای حمله در گروه، روی پیام بازیکن موردنظر ریپلای کن و بنویس «اتک».
-(سیستم مبارزه هنوز در حال ساخت است.)
-
-📈 ارتقای شخصیت:
-هر ۱۰۰ XP یک لول می‌گیری و با هر لول‌آپ ۳ امتیاز ویژگی می‌گیری.
-
-🧪 مدکیت:
-هر مدکیت ۱۵٪ از سلامتی حداکثرت رو بازیابی می‌کنه.
+سیستم مبارزه هنوز در حال ساخت است.
 
 🌑 موفق باشی، شکارچی!"""
 
@@ -114,15 +114,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def show_profile(update, user):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_TEXT)
+
+
+async def show_profile(query, user):
     row = get_player(user)
     level, xp, hp, coins, sword, armor, medkits = row
-    sword_name, sword_damage, _ = SWORDS[sword]
 
-    if armor == "none":
-        armor_text = "نداری"
-    else:
-        armor_text = ARMORS[armor][0]
+    sword_name, sword_damage, _ = SWORDS[sword]
+    armor_text = "نداری" if armor == "none" else ARMORS[armor][0]
 
     text = (
         f"👤 پروفایل {user.full_name}\n\n"
@@ -135,12 +136,12 @@ async def show_profile(update, user):
         f"🛡️ زره: {armor_text}\n"
         f"🧪 مدکیت: {medkits}/5"
     )
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 صفحه اصلی", callback_data="home")]
     ])
-    await update.callback_query.edit_message_text(
-        text, reply_markup=keyboard
-    )
+
+    await query.edit_message_text(text, reply_markup=keyboard)
 
 
 async def show_shop(query):
@@ -149,6 +150,7 @@ async def show_shop(query):
         [InlineKeyboardButton("🛡️ زره‌ها", callback_data="armors")],
         [InlineKeyboardButton("🏠 صفحه اصلی", callback_data="home")]
     ])
+
     await query.edit_message_text(
         "🛒 فروشگاه VOIDFALL\n\nیک دسته رو انتخاب کن:",
         reply_markup=keyboard
@@ -157,6 +159,7 @@ async def show_shop(query):
 
 async def show_swords(query):
     buttons = []
+
     for key, (name, damage, price) in SWORDS.items():
         buttons.append([
             InlineKeyboardButton(
@@ -164,7 +167,11 @@ async def show_swords(query):
                 callback_data=f"sword:{key}"
             )
         ])
-    buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="shop")])
+
+    buttons.append([
+        InlineKeyboardButton("🔙 بازگشت", callback_data="shop")
+    ])
+
     await query.edit_message_text(
         "⚔️ بخش شمشیرها\n\nشمشیر موردنظرت رو انتخاب کن:",
         reply_markup=InlineKeyboardMarkup(buttons)
@@ -173,6 +180,7 @@ async def show_swords(query):
 
 async def show_armors(query):
     buttons = []
+
     for key, (name, reduction, price) in ARMORS.items():
         buttons.append([
             InlineKeyboardButton(
@@ -180,45 +188,64 @@ async def show_armors(query):
                 callback_data=f"armor:{key}"
             )
         ])
-    buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="shop")])
+
+    buttons.append([
+        InlineKeyboardButton("🔙 بازگشت", callback_data="shop")
+    ])
+
     await query.edit_message_text(
         "🛡️ بخش زره‌ها\n\nزره موردنظرت رو انتخاب کن:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
-async def show_item(query, user, category, key):
+async def show_item(query, category, key):
     items = SWORDS if category == "sword" else ARMORS
+
+    if key not in items:
+        await query.answer("این وسیله پیدا نشد.", show_alert=True)
+        return
+
     name, stat, price = items[key]
-    stat_label = "آسیب" if category == "sword" else "کاهش آسیب"
+    label = "آسیب" if category == "sword" else "کاهش آسیب"
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 خرید", callback_data=f"buy:{category}:{key}")],
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="swords" if category == "sword" else "armors")]
+        [InlineKeyboardButton(
+            "🛒 خرید",
+            callback_data=f"buy:{category}:{key}"
+        )],
+        [InlineKeyboardButton(
+            "🔙 بازگشت",
+            callback_data="swords" if category == "sword" else "armors"
+        )]
     ])
 
     await query.edit_message_text(
-        f"📦 {name}\n\n{stat_label}: {stat}\nقیمت: {price} سکه",
+        f"📦 {name}\n\n{label}: {stat}\nقیمت: {price} سکه",
         reply_markup=keyboard
     )
 
 
 async def buy_item(query, user, category, key):
     items = SWORDS if category == "sword" else ARMORS
+
+    if key not in items:
+        await query.answer("این وسیله پیدا نشد.", show_alert=True)
+        return
+
     name, stat, price = items[key]
+    column = "sword" if category == "sword" else "armor"
 
     with connect() as db:
         row = db.execute(
             "SELECT coins FROM players WHERE user_id=?",
             (user.id,)
         ).fetchone()
-        coins = row[0]
 
-        if coins < price:
+        if row is None or row[0] < price:
             await query.answer("سکه کافی نداری!", show_alert=True)
             return
 
-        column = "sword" if category == "sword" else "armor"
         db.execute(
             f"UPDATE players SET coins=coins-?, {column}=? WHERE user_id=?",
             (price, key, user.id)
@@ -227,8 +254,14 @@ async def buy_item(query, user, category, key):
     await query.edit_message_text(
         f"✅ خرید موفق!\n\n{name} به تجهیزاتت اضافه شد.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛒 بازگشت به فروشگاه", callback_data="shop")],
-            [InlineKeyboardButton("🏠 صفحه اصلی", callback_data="home")]
+            [InlineKeyboardButton(
+                "🛒 بازگشت به فروشگاه",
+                callback_data="shop"
+            )],
+            [InlineKeyboardButton(
+                "🏠 صفحه اصلی",
+                callback_data="home"
+            )]
         ])
     )
 
@@ -236,32 +269,45 @@ async def buy_item(query, user, category, key):
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     data = query.data
     user = query.from_user
 
     if data == "home":
         await query.edit_message_text(
-            home_text(user.first_name), reply_markup=home_keyboard()
+            home_text(user.first_name),
+            reply_markup=home_keyboard()
         )
+
     elif data == "profile":
-        await show_profile(update, user)
+        await show_profile(query, user)
+
     elif data == "help":
         await query.edit_message_text(
             HELP_TEXT,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 صفحه اصلی", callback_data="home")]
+                [InlineKeyboardButton(
+                    "🏠 صفحه اصلی",
+                    callback_data="home"
+                )]
             ])
         )
+
     elif data == "shop":
         await show_shop(query)
+
     elif data == "swords":
         await show_swords(query)
+
     elif data == "armors":
         await show_armors(query)
+
     elif data.startswith("sword:"):
-        await show_item(query, user, "sword", data.split(":")[1])
+        await show_item(query, "sword", data.split(":")[1])
+
     elif data.startswith("armor:"):
-        await show_item(query, user, "armor", data.split(":")[1])
+        await show_item(query, "armor", data.split(":")[1])
+
     elif data.startswith("buy:"):
         _, category, key = data.split(":")
         await buy_item(query, user, category, key)
@@ -272,17 +318,22 @@ async def text_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "راهنما":
         await update.message.reply_text(HELP_TEXT)
+
     elif text == "پروفایل":
         row = get_player(update.effective_user)
         level, xp, hp, coins, sword, armor, medkits = row
+
         await update.message.reply_text(
             f"👤 پروفایل {update.effective_user.full_name}\n"
-            f"⭐ لول: {level}\n✨ XP: {xp}/100\n"
-            f"❤️ HP: {hp}/100\n🪙 سکه: {coins}\n"
+            f"⭐ لول: {level}\n"
+            f"✨ XP: {xp}/100\n"
+            f"❤️ HP: {hp}/100\n"
+            f"🪙 سکه: {coins}\n"
             f"⚔️ شمشیر: {SWORDS[sword][0]}\n"
             f"🛡️ زره: {'نداری' if armor == 'none' else ARMORS[armor][0]}\n"
             f"🧪 مدکیت: {medkits}/5"
         )
+
     elif text in ("شاپ", "فروشگاه"):
         await update.message.reply_text(
             "🛒 فروشگاه VOIDFALL",
@@ -297,16 +348,29 @@ def main():
     if not TOKEN:
         raise RuntimeError("BOT_TOKEN تنظیم نشده است.")
 
+    if not RENDER_URL:
+        raise RuntimeError("RENDER_EXTERNAL_URL تنظیم نشده است.")
+
     init_db()
+
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_commands))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, text_commands)
+    )
 
-    print("VOIDFALL is running...")
-    app.run_polling()
+    print("VOIDFALL is starting with webhook...")
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=f"{RENDER_URL}/{TOKEN}",
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
